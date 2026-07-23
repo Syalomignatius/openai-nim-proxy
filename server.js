@@ -120,7 +120,8 @@ app.post('/v1/chat/completions', async (req, res) => {
         'Authorization': `Bearer ${NIM_API_KEY}`,
         'Content-Type': 'application/json'
       },
-      responseType: stream ? 'stream' : 'json'
+      responseType: stream ? 'stream' : 'json',
+      timeout: 120000 // 120s - large/slow models like MiniMax M3 can take a while; raise further if still cutting off
     });
     
     if (stream) {
@@ -188,7 +189,18 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       });
       
-      response.data.on('end', () => res.end());
+      response.data.on('end', () => {
+        // Flush any leftover partial line still sitting in the buffer -
+        // without this, the final chunk (sometimes the last content delta or [DONE]) gets silently dropped.
+        if (buffer.trim()) {
+          if (buffer.startsWith('data: ')) {
+            res.write(buffer + '\n\n');
+          } else {
+            res.write(buffer);
+          }
+        }
+        res.end();
+      });
       response.data.on('error', (err) => {
         console.error('Stream error:', err);
         res.end();
