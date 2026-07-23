@@ -17,8 +17,8 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
 const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
-// 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
-const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
+// 🔥 THINKING MODE - now PER-MODEL instead of global (see THINKING_MODELS below).
+// Only models in that set get chat_template_kwargs attached; everything else is sent as a plain request.
 
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
@@ -32,13 +32,20 @@ const MODEL_MAPPING = {
   'glm-5.2': 'z-ai/glm-5.2'
 };
 
+// Models (by their actual NIM model ID) that require chat_template_kwargs thinking flags.
+// Add/remove entries here as you test which models need it - no more flipping a global switch.
+const THINKING_MODELS = new Set([
+  'deepseek-ai/deepseek-v4-pro',
+  'deepseek-ai/deepseek-v4-flash'
+]);
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     service: 'OpenAI to NVIDIA NIM Proxy', 
     reasoning_display: SHOW_REASONING,
-    thinking_mode: ENABLE_THINKING_MODE
+    thinking_models: Array.from(THINKING_MODELS)
   });
 });
 
@@ -92,6 +99,9 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
+    // Only attach thinking params for models that actually need them
+    const needsThinking = THINKING_MODELS.has(nimModel);
+
     // Transform OpenAI request to NIM format
     const nimRequest = {
       model: nimModel,
@@ -100,7 +110,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       max_tokens: max_tokens || 64000,
       // NOTE: NIM requires chat_template_kwargs at the ROOT of the payload (not nested under extra_body),
       // and DeepSeek V4 reasoning models specifically require BOTH thinking + enable_thinking to be set.
-      chat_template_kwargs: ENABLE_THINKING_MODE ? { thinking: true, enable_thinking: true } : undefined,
+      chat_template_kwargs: needsThinking ? { thinking: true, enable_thinking: true } : undefined,
       stream: stream || false
     };
     
@@ -245,5 +255,5 @@ app.listen(PORT, () => {
   console.log(`OpenAI to NVIDIA NIM Proxy running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
-  console.log(`Thinking mode: ${ENABLE_THINKING_MODE ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`Thinking mode enabled for: ${Array.from(THINKING_MODELS).join(', ') || 'none'}`);
 });
