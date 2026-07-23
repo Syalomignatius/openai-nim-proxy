@@ -68,6 +68,7 @@ app.get('/v1/models', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
+    console.log(`[REQUEST] model=${model} requested_max_tokens=${max_tokens} temperature=${temperature} stream=${stream}`);
     
     // Smart model selection with fallback
     let nimModel = MODEL_MAPPING[model];
@@ -147,6 +148,9 @@ app.post('/v1/chat/completions', async (req, res) => {
             
             try {
               const data = JSON.parse(line.slice(6));
+              if (data.choices?.[0]?.finish_reason) {
+                console.log(`[STREAM END] finish_reason=${data.choices[0].finish_reason}`);
+              }
               if (data.choices?.[0]?.delta) {
                 const reasoning = data.choices[0].delta.reasoning_content;
                 const content = data.choices[0].delta.content;
