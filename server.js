@@ -97,8 +97,10 @@ app.post('/v1/chat/completions', async (req, res) => {
       model: nimModel,
       messages: messages,
       temperature: temperature || 0.75,
-      max_tokens: max_tokens || 32000,
-      extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
+      max_tokens: max_tokens || 64000,
+      // NOTE: NIM requires chat_template_kwargs at the ROOT of the payload (not nested under extra_body),
+      // and DeepSeek V4 reasoning models specifically require BOTH thinking + enable_thinking to be set.
+      chat_template_kwargs: ENABLE_THINKING_MODE ? { thinking: true, enable_thinking: true } : undefined,
       stream: stream || false
     };
     
@@ -215,11 +217,12 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     
   } catch (error) {
-    console.error('Proxy error:', error.message);
+    // Log the ACTUAL error NIM returned, not just the generic axios message
+    console.error('Proxy error:', error.response?.data || error.message);
     
     res.status(error.response?.status || 500).json({
       error: {
-        message: error.message || 'Internal server error',
+        message: error.response?.data?.error?.message || error.message || 'Internal server error',
         type: 'invalid_request_error',
         code: error.response?.status || 500
       }
