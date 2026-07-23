@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '64mb' }));
+app.use(express.json({ limit: '128mb' }));
 
 // NVIDIA NIM API configuration
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
@@ -107,7 +107,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       model: nimModel,
       messages: messages,
       temperature: temperature || 0.75,
-      max_tokens: max_tokens || 64000,
+      max_tokens: max_tokens || 128000,
       // NOTE: NIM requires chat_template_kwargs at the ROOT of the payload (not nested under extra_body),
       // and DeepSeek V4 reasoning models specifically require BOTH thinking + enable_thinking to be set.
       chat_template_kwargs: needsThinking ? { thinking: true, enable_thinking: true } : undefined,
