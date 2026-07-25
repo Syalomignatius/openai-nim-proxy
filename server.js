@@ -123,7 +123,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         'Content-Type': 'application/json'
       },
       responseType: stream ? 'stream' : 'json',
-      timeout: 600000 // 600s (10min) - DeepSeek V4 Pro in thinking mode can take a while to produce its first token
+      timeout: 300000 // 300s (5min) - DeepSeek V4 Pro / large models in thinking mode can take a while to produce their first token
     });
     
     if (stream) {
@@ -188,7 +188,9 @@ app.post('/v1/chat/completions', async (req, res) => {
               }
               res.write(`data: ${JSON.stringify(data)}\n\n`);
             } catch (e) {
-              res.write(line + '\n');
+              // Don't forward broken/unparsable chunks - passing malformed JSON downstream
+              // makes Chub's own parser crash trying to read .delta off it. Skip and log instead.
+              console.error('Skipped unparsable NIM chunk:', line.slice(0, 200));
             }
           }
         });
