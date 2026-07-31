@@ -40,6 +40,13 @@ const THINKING_MODELS = new Set([
   'deepseek-ai/deepseek-v4-flash'
 ]);
 
+// Per-model max_tokens fallback (used only when Chub doesn't send its own max_tokens).
+// Anything not listed here falls back to DEFAULT_MAX_TOKENS.
+const DEFAULT_MAX_TOKENS = 128000;
+const MODEL_MAX_TOKENS = {
+  'z-ai/glm-5.2': 64000
+};
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
@@ -109,7 +116,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       model: nimModel,
       messages: messages,
       temperature: temperature || 0.75,
-      max_tokens: max_tokens || 128000,
+      max_tokens: max_tokens || MODEL_MAX_TOKENS[nimModel] || DEFAULT_MAX_TOKENS,
       // NOTE: NIM requires chat_template_kwargs at the ROOT of the payload (not nested under extra_body),
       // and DeepSeek V4 reasoning models specifically require BOTH thinking + enable_thinking to be set.
       chat_template_kwargs: needsThinking ? { thinking: true, enable_thinking: true } : undefined,
@@ -123,7 +130,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         'Content-Type': 'application/json'
       },
       responseType: stream ? 'stream' : 'json',
-      timeout: 300000 // 300s (5min) - DeepSeek V4 Pro / large models in thinking mode can take a while to produce their first token
+      timeout: 600000 // 300s (5min) - DeepSeek V4 Pro / large models in thinking mode can take a while to produce their first token
     });
     
     if (stream) {
