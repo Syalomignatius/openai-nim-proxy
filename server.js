@@ -19,33 +19,67 @@ const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE - now PER-MODEL instead of global (see THINKING_MODELS below).
 // Only models in that set get chat_template_kwargs attached; everything else is sent as a plain request.
+// NOTE: DeepSeek Flash/Pro thinking mode removed - it adds a long silent reasoning phase before
+// any content appears, which Chub seems to time out/bail on more aggressively than Janitor does.
+// Disabling it trades away visible reasoning for much faster, more reliable responses on Chub.
 
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
   'gpt-4': 'qwen/qwen3-coder-480b-a35b-instruct',
   'gpt-oss-120b': 'openai/gpt-oss-120b',
-  'kimi-k2.6': 'moonshotai/kimi-k2.6',
-  'deepseek-v4-flash': 'deepseek-ai/deepseek-v4-flash',
-  'deepseek-v4-pro': 'deepseek-ai/deepseek-v4-pro',
+  'kimi-k3': 'moonshotai/kimi-k3',
+  'deepseek-v4-flash': 'deepseek-ai/deepseek-v4-flash-0731',
+  'deepseek-v4-pro': 'deepseek-ai/deepseek-v4-pro-0813',
   'minimax-m3': 'minimaxai/minimax-m3',
-  'minimax-m2.7': 'minimaxai/minimax-m2.7',
+  'step-3.7-flash': 'stepfun-ai/step-3.7-flash',
   'glm-5.2': 'z-ai/glm-5.2'
 };
 
 // Models (by their actual NIM model ID) that require chat_template_kwargs thinking flags.
-// Add/remove entries here as you test which models need it - no more flipping a global switch.
-const THINKING_MODELS = new Set([
-  'deepseek-ai/deepseek-v4-pro',
-  'deepseek-ai/deepseek-v4-flash'
-]);
+// Left empty - DeepSeek Flash/Pro thinking mode disabled for Chub reliability (see note above).
+// Add a model ID back here if you want to re-enable thinking mode for it.
+const THINKING_MODELS = new Set([]);
 
 // Per-model max_tokens fallback (used only when Chub doesn't send its own max_tokens).
 // Anything not listed here falls back to DEFAULT_MAX_TOKENS.
-const DEFAULT_MAX_TOKENS = 128000;
+const DEFAULT_MAX_TOKENS = 64000;
 const MODEL_MAX_TOKENS = {
-  'z-ai/glm-5.2': 64000
+  'z-ai/glm-5.2': 64000,
+  'deepseek-ai/deepseek-v4-flash-0731': 32000, // lower ceiling = faster, more reliable completion on Chub
+  'deepseek-ai/deepseek-v4-pro-0813': 32000
 };
+
+// Simple retry helper for 429s - waits and retries instead of failing immediately.
+// Also logs the actual rate-limit headers NIM sends back (NIM doesn't expose useful ones,
+// but kept here in case that changes).
+async function postWithRetry(url, data, config, maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await axios.post(url, data, config);
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 429) {
+        const headers = err.response?.headers || {};
+        console.log('[429 HEADERS]', {
+          'retry-after': headers['retry-after'],
+          'x-ratelimit-limit': headers['x-ratelimit-limit'],
+          'x-ratelimit-remaining': headers['x-ratelimit-remaining'],
+          'x-ratelimit-reset': headers['x-ratelimit-reset'],
+          'all-headers': headers
+        });
+
+        if (attempt < maxRetries) {
+          const waitMs = 2000 * (attempt + 1); // 2s, 4s, 6s backoff
+          console.log(`[RETRY] Got 429, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+          continue;
+        }
+      }
+      throw err;
+    }
+  }
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -123,14 +157,14 @@ app.post('/v1/chat/completions', async (req, res) => {
       stream: stream || false
     };
     
-    // Make request to NVIDIA NIM API
-    const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
+    // Make request to NVIDIA NIM API (with automatic retry on 429 rate limits)
+    const response = await postWithRetry(`${NIM_API_BASE}/chat/completions`, nimRequest, {
       headers: {
         'Authorization': `Bearer ${NIM_API_KEY}`,
         'Content-Type': 'application/json'
       },
       responseType: stream ? 'stream' : 'json',
-      timeout: 600000 // 300s (5min) - DeepSeek V4 Pro / large models in thinking mode can take a while to produce their first token
+      timeout: 600000 // 600s (10min) - large models can take a while to fully respond
     });
     
     if (stream) {
@@ -253,12 +287,55 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     
   } catch (error) {
-    // Log the ACTUAL error NIM returned, not just the generic axios message
-    console.error('Proxy error:', error.response?.data || error.message);
+    // If the request was made with responseType: 'stream', error.response.data is a raw
+    // unread stream, not parsed JSON - dumping it directly logs a massive internal object.
+    // Read it properly to get NIM's actual error message.
+    let errorDetail = error.message;
+    if (error.response?.data && typeof error.response.data.on === 'function') {
+      try {
+        errorDetail = await new Promise((resolve) => {
+          let raw = '';
+          error.response.data.on('data', (chunk) => { raw += chunk.toString(); });
+          error.response.data.on('end', () => {
+            try {
+              resolve(JSON.parse(raw));
+            } catch {
+              resolve(raw || error.message);
+            }
+          });
+          error.response.data.on('error', () => resolve(error.message));
+        });
+      } catch {
+        errorDetail = error.message;
+      }
+    } else if (error.response?.data) {
+      errorDetail = error.response.data;
+    }
+
+    console.error('Proxy error:', errorDetail);
     
+    // Always resolve to a plain string - never let a raw object leak into the message field,
+    // otherwise clients display it as the literal text "[object Object]".
+    let errorMessage;
+    if (typeof errorDetail === 'string') {
+      errorMessage = errorDetail;
+    } else if (errorDetail?.error?.message) {
+      errorMessage = errorDetail.error.message;
+    } else if (errorDetail?.message) {
+      errorMessage = errorDetail.message;
+    } else if (errorDetail) {
+      try {
+        errorMessage = JSON.stringify(errorDetail);
+      } catch {
+        errorMessage = 'Internal server error';
+      }
+    } else {
+      errorMessage = 'Internal server error';
+    }
+
     res.status(error.response?.status || 500).json({
       error: {
-        message: error.response?.data?.error?.message || error.message || 'Internal server error',
+        message: errorMessage,
         type: 'invalid_request_error',
         code: error.response?.status || 500
       }
