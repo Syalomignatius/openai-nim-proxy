@@ -19,9 +19,6 @@ const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE - now PER-MODEL instead of global (see THINKING_MODELS below).
 // Only models in that set get chat_template_kwargs attached; everything else is sent as a plain request.
-// NOTE: DeepSeek Flash/Pro thinking mode removed - it adds a long silent reasoning phase before
-// any content appears, which Chub seems to time out/bail on more aggressively than Janitor does.
-// Disabling it trades away visible reasoning for much faster, more reliable responses on Chub.
 
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
@@ -37,7 +34,7 @@ const MODEL_MAPPING = {
 };
 
 // Models (by their actual NIM model ID) that require chat_template_kwargs thinking flags.
-// Left empty - DeepSeek Flash/Pro thinking mode disabled for Chub reliability (see note above).
+// Left empty - DeepSeek Flash/Pro thinking mode disabled for Chub reliability.
 // Add a model ID back here if you want to re-enable thinking mode for it.
 const THINKING_MODELS = new Set([]);
 
@@ -46,7 +43,7 @@ const THINKING_MODELS = new Set([]);
 const DEFAULT_MAX_TOKENS = 64000;
 const MODEL_MAX_TOKENS = {
   'z-ai/glm-5.2': 64000,
-  'deepseek-ai/deepseek-v4-flash-0731': 32000, // lower ceiling = faster, more reliable completion on Chub
+  'deepseek-ai/deepseek-v4-flash-0731': 32000,
   'deepseek-ai/deepseek-v4-pro-0813': 32000
 };
 
@@ -344,7 +341,10 @@ app.post('/v1/chat/completions', async (req, res) => {
 });
 
 // Catch-all for unsupported endpoints
-app.all('*', (req, res) => {
+// NOTE: Express 5 changed how bare '*' wildcards work in routes (path-to-regexp v7 requires
+// named wildcards like '*splat'). Using app.use() with no path instead sidesteps that entirely -
+// it matches all methods and paths the same way app.all('*', ...) did in Express 4.
+app.use((req, res) => {
   res.status(404).json({
     error: {
       message: `Endpoint ${req.path} not found`,
