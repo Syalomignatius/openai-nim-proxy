@@ -42,8 +42,8 @@ const MODEL_MAPPING = {
 // available substitutes. Quality/style WILL differ from the original model. Models with
 // no reasonable Cloudflare equivalent are left unmapped - fallback is skipped for those.
 const CLOUDFLARE_FALLBACK_MAPPING = {
-  'z-ai/glm-5.2': '@cf/z-ai/glm-4.7-flash',
-  'moonshotai/kimi-k3': '@cf/moonshotai/kimi-k2.5'
+  'z-ai/glm-4.7': '@cf/z-ai/glm-4.7-flash',
+  'moonshotai/kimi-k2.5': '@cf/moonshotai/kimi-k2.5'
   // minimax-m3, deepseek-v4-flash/pro, step-3.7-flash: no Cloudflare equivalent, no entry here
 };
 
