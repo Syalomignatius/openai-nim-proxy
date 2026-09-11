@@ -1,4 +1,4 @@
-// server.js - OpenAI to NVIDIA NIM API Proxy (with Cloudflare Workers AI fallback)
+// server.js - OpenAI to NVIDIA NIM API Proxy (with direct Cloudflare models + Cloudflare fallback)
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -14,7 +14,7 @@ app.use(express.json({ limit: '128mb' }));
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
-// Cloudflare Workers AI configuration (free fallback - used when NIM fails/rate-limits)
+// Cloudflare Workers AI configuration
 const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 const CLOUDFLARE_API_BASE = CLOUDFLARE_ACCOUNT_ID
@@ -37,14 +37,11 @@ const MODEL_MAPPING = {
   'glm-5.2': 'z-ai/glm-5.2'
 };
 
-// NIM model ID -> Cloudflare Workers AI equivalent. NOT identical models - Cloudflare
-// doesn't host GLM-5.2/MiniMax/DeepSeek-V4 specifically, so these are the closest
-// available substitutes. Quality/style WILL differ from the original model. Models with
-// no reasonable Cloudflare equivalent are left unmapped - fallback is skipped for those.
-const CLOUDFLARE_FALLBACK_MAPPING = {
-  'z-ai/glm-4.7': '@cf/z-ai/glm-4.7-flash',
-  'moonshotai/kimi-k2.5': '@cf/moonshotai/kimi-k2.5'
-  // minimax-m3, deepseek-v4-flash/pro, step-3.7-flash: no Cloudflare equivalent, no entry here
+// Models that go DIRECTLY to Cloudflare Workers AI - not NIM at all, no fallback logic.
+// Key = the model name you select in Chub, value = the Cloudflare model ID.
+const CLOUDFLARE_DIRECT_MODELS = {
+  'glm-4.7': '@cf/z-ai/glm-4.7-flash',
+  'kimi-k2.5': '@cf/moonshotai/kimi-k2.5'
 };
 
 const THINKING_MODELS = new Set([]);
@@ -56,72 +53,66 @@ const MODEL_MAX_TOKENS = {
   'deepseek-ai/deepseek-v4-pro-0813': 32000
 };
 
-// Tries NIM first (with retries on 429). If NIM exhausts retries or errors out, and a
-// Cloudflare equivalent exists, falls back to that - completely free either way.
-async function postWithFallback(nimModel, nimRequestBody, axiosConfig, maxRetries = 3) {
-  // --- Try NIM first ---
+// Simple retry helper for 429s on NIM requests.
+async function postWithRetry(url, data, config, maxRetries = 3) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequestBody, {
-        ...axiosConfig,
-        headers: { 'Authorization': `Bearer ${NIM_API_KEY}`, 'Content-Type': 'application/json' }
-      });
-      return { response, provider: 'nim', modelUsed: nimModel };
+      return await axios.post(url, data, config);
     } catch (err) {
       const status = err.response?.status;
-      if (status === 429 && attempt < maxRetries) {
-        const waitMs = 2000 * (attempt + 1);
-        console.log(`[RETRY] NIM 429, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, waitMs));
-        continue;
+      if (status === 429) {
+        const headers = err.response?.headers || {};
+        console.log('[429 HEADERS]', {
+          'retry-after': headers['retry-after'],
+          'x-ratelimit-limit': headers['x-ratelimit-limit'],
+          'x-ratelimit-remaining': headers['x-ratelimit-remaining'],
+          'x-ratelimit-reset': headers['x-ratelimit-reset'],
+          'all-headers': headers
+        });
+
+        if (attempt < maxRetries) {
+          const waitMs = 2000 * (attempt + 1);
+          console.log(`[RETRY] Got 429, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+          continue;
+        }
       }
-      console.log(`[FALLBACK] NIM failed (status=${status || 'no response'}), checking Cloudflare fallback...`);
-      break;
+      throw err;
     }
   }
-
-  // --- Fallback to Cloudflare Workers AI ---
-  const cfModel = CLOUDFLARE_FALLBACK_MAPPING[nimModel];
-  if (!cfModel || !CLOUDFLARE_API_BASE || !CLOUDFLARE_API_TOKEN) {
-    console.log('[FALLBACK] No Cloudflare equivalent/credentials available, giving up.');
-    throw new Error('NIM failed and no Cloudflare fallback is available for this model.');
-  }
-
-  console.log(`[FALLBACK] Trying Cloudflare with model=${cfModel}`);
-  const cfBody = { ...nimRequestBody, model: cfModel };
-  delete cfBody.chat_template_kwargs; // Cloudflare doesn't use NIM's thinking-mode param shape
-
-  const response = await axios.post(`${CLOUDFLARE_API_BASE}/chat/completions`, cfBody, {
-    ...axiosConfig,
-    headers: {
-      'Authorization': `Bearer ${CLOUDFLARE_API_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  });
-  return { response, provider: 'cloudflare', modelUsed: cfModel };
 }
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    service: 'OpenAI to NVIDIA NIM Proxy (with Cloudflare fallback)',
+    service: 'OpenAI to NVIDIA NIM Proxy (with direct Cloudflare models)',
     reasoning_display: SHOW_REASONING,
     thinking_models: Array.from(THINKING_MODELS),
-    cloudflare_fallback_enabled: !!(CLOUDFLARE_API_BASE && CLOUDFLARE_API_TOKEN),
-    cloudflare_fallback_models: Object.keys(CLOUDFLARE_FALLBACK_MAPPING)
+    cloudflare_enabled: !!(CLOUDFLARE_API_BASE && CLOUDFLARE_API_TOKEN),
+    cloudflare_direct_models: Object.keys(CLOUDFLARE_DIRECT_MODELS)
   });
 });
 
-// List models endpoint (OpenAI compatible)
+// List models endpoint (OpenAI compatible) - includes both NIM and Cloudflare direct models
 app.get('/v1/models', (req, res) => {
-  const models = Object.keys(MODEL_MAPPING).map(model => ({
+  const nimModels = Object.keys(MODEL_MAPPING).map(model => ({
     id: model,
     object: 'model',
     created: Date.now(),
     owned_by: 'nvidia-nim-proxy'
   }));
-  res.json({ object: 'list', data: models });
+  const cfModels = Object.keys(CLOUDFLARE_DIRECT_MODELS).map(model => ({
+    id: model,
+    object: 'model',
+    created: Date.now(),
+    owned_by: 'cloudflare-workers-ai'
+  }));
+
+  res.json({
+    object: 'list',
+    data: [...nimModels, ...cfModels]
+  });
 });
 
 // Chat completions endpoint (main proxy)
@@ -130,6 +121,36 @@ app.post('/v1/chat/completions', async (req, res) => {
     const { model, messages, temperature, max_tokens, stream } = req.body;
     console.log(`[REQUEST] model=${model} requested_max_tokens=${max_tokens} temperature=${temperature} stream=${stream}`);
 
+    // --- Route 1: Cloudflare direct models (glm-4.7, kimi-k2.5) ---
+    if (CLOUDFLARE_DIRECT_MODELS[model]) {
+      if (!CLOUDFLARE_API_BASE || !CLOUDFLARE_API_TOKEN) {
+        throw new Error(`Model "${model}" requires Cloudflare credentials, which are not configured.`);
+      }
+
+      const cfModel = CLOUDFLARE_DIRECT_MODELS[model];
+      const cfRequest = {
+        model: cfModel,
+        messages: messages,
+        temperature: temperature || 0.75,
+        max_tokens: max_tokens || DEFAULT_MAX_TOKENS,
+        stream: stream || false
+      };
+
+      console.log(`[PROVIDER USED] cloudflare-direct (${cfModel})`);
+
+      const response = await axios.post(`${CLOUDFLARE_API_BASE}/chat/completions`, cfRequest, {
+        headers: {
+          'Authorization': `Bearer ${CLOUDFLARE_API_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        responseType: stream ? 'stream' : 'json',
+        timeout: 600000
+      });
+
+      return handleProviderResponse(response, model, stream, res);
+    }
+
+    // --- Route 2: NVIDIA NIM models (everything else) ---
     let nimModel = MODEL_MAPPING[model];
     if (!nimModel) {
       const modelLower = model.toLowerCase();
@@ -153,102 +174,18 @@ app.post('/v1/chat/completions', async (req, res) => {
       stream: stream || false
     };
 
-    const { response, provider, modelUsed } = await postWithFallback(nimModel, nimRequest, {
+    const response = await postWithRetry(`${NIM_API_BASE}/chat/completions`, nimRequest, {
+      headers: {
+        'Authorization': `Bearer ${NIM_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
       responseType: stream ? 'stream' : 'json',
       timeout: 600000
     });
-    console.log(`[PROVIDER USED] ${provider} (${modelUsed})`);
 
-    if (stream) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
+    console.log(`[PROVIDER USED] nim (${nimModel})`);
+    return handleProviderResponse(response, model, stream, res);
 
-      let buffer = '';
-      let reasoningStarted = false;
-
-      response.data.on('data', (chunk) => {
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        lines.forEach(line => {
-          if (line.startsWith('data: ')) {
-            if (line.includes('[DONE]')) {
-              res.write(line + '\n');
-              return;
-            }
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.choices?.[0]?.finish_reason) {
-                console.log(`[STREAM END] finish_reason=${data.choices[0].finish_reason}`);
-              }
-              if (data.choices?.[0]?.delta) {
-                const reasoning = data.choices[0].delta.reasoning_content;
-                const content = data.choices[0].delta.content;
-
-                if (SHOW_REASONING) {
-                  let combinedContent = '';
-                  if (reasoning && !reasoningStarted) {
-                    combinedContent = '<think>\n' + reasoning;
-                    reasoningStarted = true;
-                  } else if (reasoning) {
-                    combinedContent = reasoning;
-                  }
-                  if (content && reasoningStarted) {
-                    combinedContent += '</think>\n\n' + content;
-                    reasoningStarted = false;
-                  } else if (content) {
-                    combinedContent += content;
-                  }
-                  if (combinedContent) {
-                    data.choices[0].delta.content = combinedContent;
-                    delete data.choices[0].delta.reasoning_content;
-                  }
-                } else {
-                  data.choices[0].delta.content = content || '';
-                  delete data.choices[0].delta.reasoning_content;
-                }
-              }
-              res.write(`data: ${JSON.stringify(data)}\n\n`);
-            } catch (e) {
-              console.error('Skipped unparsable chunk:', line.slice(0, 200));
-            }
-          }
-        });
-      });
-
-      response.data.on('end', () => {
-        if (buffer.trim()) {
-          res.write(buffer.startsWith('data: ') ? buffer + '\n\n' : buffer);
-        }
-        res.end();
-      });
-      response.data.on('error', (err) => {
-        console.error('Stream error:', err);
-        res.end();
-      });
-    } else {
-      const openaiResponse = {
-        id: `chatcmpl-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: response.data.choices.map(choice => {
-          let fullContent = choice.message?.content || '';
-          if (SHOW_REASONING && choice.message?.reasoning_content) {
-            fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
-          }
-          return {
-            index: choice.index,
-            message: { role: choice.message.role, content: fullContent },
-            finish_reason: choice.finish_reason
-          };
-        }),
-        usage: response.data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
-      };
-      res.json(openaiResponse);
-    }
   } catch (error) {
     let errorDetail = error.message;
     if (error.response?.data && typeof error.response.data.on === 'function') {
@@ -282,7 +219,101 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
-// Catch-all for unsupported endpoints (Express 5-safe - see earlier note on app.use vs app.all('*'))
+// Shared response handler for both Cloudflare-direct and NIM responses (stream + non-stream)
+function handleProviderResponse(response, model, stream, res) {
+  if (stream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    let buffer = '';
+    let reasoningStarted = false;
+
+    response.data.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      lines.forEach(line => {
+        if (line.startsWith('data: ')) {
+          if (line.includes('[DONE]')) {
+            res.write(line + '\n');
+            return;
+          }
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.choices?.[0]?.finish_reason) {
+              console.log(`[STREAM END] finish_reason=${data.choices[0].finish_reason}`);
+            }
+            if (data.choices?.[0]?.delta) {
+              const reasoning = data.choices[0].delta.reasoning_content;
+              const content = data.choices[0].delta.content;
+
+              if (SHOW_REASONING) {
+                let combinedContent = '';
+                if (reasoning && !reasoningStarted) {
+                  combinedContent = '<think>\n' + reasoning;
+                  reasoningStarted = true;
+                } else if (reasoning) {
+                  combinedContent = reasoning;
+                }
+                if (content && reasoningStarted) {
+                  combinedContent += '</think>\n\n' + content;
+                  reasoningStarted = false;
+                } else if (content) {
+                  combinedContent += content;
+                }
+                if (combinedContent) {
+                  data.choices[0].delta.content = combinedContent;
+                  delete data.choices[0].delta.reasoning_content;
+                }
+              } else {
+                data.choices[0].delta.content = content || '';
+                delete data.choices[0].delta.reasoning_content;
+              }
+            }
+            res.write(`data: ${JSON.stringify(data)}\n\n`);
+          } catch (e) {
+            console.error('Skipped unparsable chunk:', line.slice(0, 200));
+          }
+        }
+      });
+    });
+
+    response.data.on('end', () => {
+      if (buffer.trim()) {
+        res.write(buffer.startsWith('data: ') ? buffer + '\n\n' : buffer);
+      }
+      res.end();
+    });
+    response.data.on('error', (err) => {
+      console.error('Stream error:', err);
+      res.end();
+    });
+  } else {
+    const openaiResponse = {
+      id: `chatcmpl-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: model,
+      choices: response.data.choices.map(choice => {
+        let fullContent = choice.message?.content || '';
+        if (SHOW_REASONING && choice.message?.reasoning_content) {
+          fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
+        }
+        return {
+          index: choice.index,
+          message: { role: choice.message.role, content: fullContent },
+          finish_reason: choice.finish_reason
+        };
+      }),
+      usage: response.data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+    };
+    res.json(openaiResponse);
+  }
+}
+
+// Catch-all for unsupported endpoints (Express 5-safe)
 app.use((req, res) => {
   res.status(404).json({
     error: { message: `Endpoint ${req.path} not found`, type: 'invalid_request_error', code: 404 }
@@ -292,5 +323,5 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`OpenAI to NVIDIA NIM Proxy running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Cloudflare fallback: ${(CLOUDFLARE_API_BASE && CLOUDFLARE_API_TOKEN) ? 'ENABLED' : 'DISABLED (missing credentials)'}`);
+  console.log(`Cloudflare direct models: ${Object.keys(CLOUDFLARE_DIRECT_MODELS).join(', ')}`);
 });
