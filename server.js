@@ -40,7 +40,7 @@ const MODEL_MAPPING = {
 // Models that go DIRECTLY to Cloudflare Workers AI - not NIM at all, no fallback logic.
 // Key = the model name you select in Chub, value = the Cloudflare model ID.
 const CLOUDFLARE_DIRECT_MODELS = {
-  'glm-4.7': '@cf/z-ai/glm-4.7-flash',
+  'glm-4.7': '@cf/zai-org/glm-4.7-flash',
   'kimi-k2.5': '@cf/moonshotai/kimi-k2.5'
 };
 
