@@ -34,7 +34,7 @@ const MODEL_MAPPING = {
   'deepseek-v4-pro': 'deepseek-ai/deepseek-v4-pro-0813',
   'minimax-m3': 'minimaxai/minimax-m3',
   'step-3.7-flash': 'stepfun-ai/step-3.7-flash',
-  'glm-5.2': 'z-ai/glm-5.2'
+  'glm-5-3': 'z-ai/glm-5.3'
 };
 
 // Models that go DIRECTLY to Cloudflare Workers AI - not NIM at all, no fallback logic.
