@@ -35,6 +35,7 @@ const MODEL_MAPPING = {
   'minimax-m3': 'minimaxai/minimax-m3',
   'step-3.7-flash': 'stepfun-ai/step-3.7-flash',
   'glm-5.3': 'z-ai/glm-5.3'
+  'glm-5.3-flash': 'z-ai/glm-5.3-flash'
 };
 
 // Models that go DIRECTLY to Cloudflare Workers AI - not NIM at all, no fallback logic.
@@ -49,6 +50,7 @@ const THINKING_MODELS = new Set([]);
 const DEFAULT_MAX_TOKENS = 64000;
 const MODEL_MAX_TOKENS = {
   'z-ai/glm-5.3': 32000,
+  'z-ai/glm-5.3-flash': 32000,
   'deepseek-ai/deepseek-v4-flash-0731': 32000,
   'deepseek-ai/deepseek-v4-pro-0813': 32000
 };
