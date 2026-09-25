@@ -50,6 +50,7 @@ const THINKING_MODELS = new Set([]);
 const DEFAULT_MAX_TOKENS = 128000;
 const MODEL_MAX_TOKENS = {
   'z-ai/glm-5.3': 32000,
+  'z-ai/glm-5.3-flash': 32000,
   'deepseek-ai/deepseek-v4.1-flash': 32000,
   'deepseek-ai/deepseek-v4-pro-0813': 32000
 };
