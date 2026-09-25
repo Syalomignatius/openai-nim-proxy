@@ -30,7 +30,7 @@ const MODEL_MAPPING = {
   'gpt-4': 'qwen/qwen3-coder-480b-a35b-instruct',
   'gpt-oss-120b': 'openai/gpt-oss-120b',
   'kimi-k3': 'moonshotai/kimi-k3',
-  'deepseek-v4-flash': 'deepseek-ai/deepseek-v4-flash-0731',
+  'deepseek-v4-flash': 'deepseek-ai/deepseek-v4.1-flash',
   'deepseek-v4-pro': 'deepseek-ai/deepseek-v4-pro-0813',
   'minimax-m3': 'minimaxai/minimax-m3',
   'step-3.7-flash': 'stepfun-ai/step-3.7-flash',
@@ -50,7 +50,7 @@ const THINKING_MODELS = new Set([]);
 const DEFAULT_MAX_TOKENS = 128000;
 const MODEL_MAX_TOKENS = {
   'z-ai/glm-5.3': 32000,
-  'deepseek-ai/deepseek-v4-flash-0731': 32000,
+  'deepseek-ai/deepseek-v4.1-flash': 32000,
   'deepseek-ai/deepseek-v4-pro-0813': 32000
 };
 
